@@ -20,9 +20,9 @@ data/*.csv
 *.jpg
 *.jpeg
 
-# Allow PNG reports in reports folder
+# Allow PNG reports in reports folders
+!Report_RSI14_Signals_and_DCA_Strategy/*.png
 !reports/*.png
-!Report_*_RSI14_DCA_EN.png
 
 # IDE
 .vscode/
