@@ -14,11 +14,15 @@ data/*.csv
 *.csv
 *.json
 
-# Reports and images
-*.png
-*.pdf
+# Reports and images (but allow reports folder)
+# *.png
+# *.pdf
 *.jpg
 *.jpeg
+
+# Allow PNG reports in reports folder
+!reports/*.png
+!Report_*_RSI14_DCA_EN.png
 
 # IDE
 .vscode/
