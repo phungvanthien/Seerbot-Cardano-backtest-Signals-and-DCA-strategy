@@ -11,8 +11,10 @@ ENV/
 
 # Data files
 data/*.csv
-*.csv
 *.json
+
+# Allow optimization results
+!optimal_params*.csv
 
 # Reports and images (but allow reports folder)
 # *.png

@@ -120,7 +120,31 @@ def summarize_results_with_selection(results, selection):
     return results
 
 def load_optimal_params():
-    """Load optimal parameters"""
+    """Load optimal parameters for intraday timeframes"""
+    # First try to load intraday-specific params
+    filename_intraday = 'optimal_params_intraday_timeframes.csv'
+    if os.path.exists(filename_intraday):
+        try:
+            df = pd.read_csv(filename_intraday)
+            params_dict = {}
+            for _, row in df.iterrows():
+                pair = row['pair']
+                timeframe = row['timeframe']
+                key = f"{pair}_{timeframe}"
+                params_dict[key] = {
+                    'take_profit': TAKE_PROFIT_PCT / 100,
+                    'stop_loss': abs(STOP_LOSS_PCT) / 100,
+                    'rsi_buy': int(row['rsi_buy']),
+                    'rsi_sell': int(row['rsi_sell']),
+                    'max_dca': int(row['max_dca']),
+                    'use_trend_filter': False,
+                    'use_volume_filter': False
+                }
+            return params_dict
+        except:
+            pass
+    
+    # Fallback to general params
     filename = 'optimal_params_real_data.csv'
     if not os.path.exists(filename):
         return {}
@@ -130,8 +154,8 @@ def load_optimal_params():
         for _, row in df.iterrows():
             pair = row['Pair']
             params_dict[pair] = {
-                'take_profit': TAKE_PROFIT_PCT / 100,  # Override with 5%
-                'stop_loss': abs(STOP_LOSS_PCT) / 100,  # Override with 2.5%
+                'take_profit': TAKE_PROFIT_PCT / 100,
+                'stop_loss': abs(STOP_LOSS_PCT) / 100,
                 'rsi_buy': int(row['RSI Buy']),
                 'rsi_sell': int(row['RSI Sell']),
                 'max_dca': int(row['Max DCA']),
@@ -180,16 +204,38 @@ def backtest_timeframe(pair, params, timeframe='6H'):
         if len(df) < rsi_period + 5:
             return None
         
-        # Adjust parameters for shorter timeframes
-        adjusted_params = params.copy()
-        adjusted_params['take_profit'] = TAKE_PROFIT_PCT / 100  # Ensure 5%
-        adjusted_params['stop_loss'] = abs(STOP_LOSS_PCT) / 100  # Ensure 2.5%
+        # Try to get optimized params for this specific pair and timeframe
+        optimal_params = load_optimal_params()
+        key = f"{pair}_{timeframe}"
         
-        # Adjust RSI for shorter timeframes
-        if timeframe in ['2H', '1H']:
-            adjusted_params['rsi_buy'] = max(20, params['rsi_buy'] - 3)
-        elif timeframe in ['4H', '6H']:
-            adjusted_params['rsi_buy'] = max(20, params['rsi_buy'] - 2)
+        if key in optimal_params:
+            # Use optimized params for this specific combination
+            adjusted_params = optimal_params[key].copy()
+            print(f"    Using optimized params: RSI Buy={adjusted_params['rsi_buy']}, RSI Sell={adjusted_params['rsi_sell']}, Max DCA={adjusted_params['max_dca']}")
+        else:
+            # Fallback to general params for this pair
+            if pair in optimal_params:
+                adjusted_params = optimal_params[pair].copy()
+            else:
+                # Default params
+                adjusted_params = {
+                    'take_profit': TAKE_PROFIT_PCT / 100,
+                    'stop_loss': abs(STOP_LOSS_PCT) / 100,
+                    'rsi_buy': 25,
+                    'rsi_sell': 75,
+                    'max_dca': 3,
+                    'use_trend_filter': False,
+                    'use_volume_filter': False
+                }
+            
+            adjusted_params['take_profit'] = TAKE_PROFIT_PCT / 100  # Ensure 5%
+            adjusted_params['stop_loss'] = abs(STOP_LOSS_PCT) / 100  # Ensure 2.5%
+            
+            # Adjust RSI for shorter timeframes if using general params
+            if timeframe in ['2H', '1H']:
+                adjusted_params['rsi_buy'] = max(20, adjusted_params['rsi_buy'] - 3)
+            elif timeframe in ['4H', '6H']:
+                adjusted_params['rsi_buy'] = max(20, adjusted_params['rsi_buy'] - 2)
         
         params_clean = {k: v for k, v in adjusted_params.items() if k != 'position_size'}
         
