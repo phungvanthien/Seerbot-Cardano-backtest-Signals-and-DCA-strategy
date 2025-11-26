@@ -21,6 +21,104 @@ MAX_TRADES = 100  # Maximum trades in each report
 TAKE_PROFIT_PCT = 5.0  # 5%
 STOP_LOSS_PCT = -2.5   # -2.5%
 
+def run_backtest_on_df(df, rsi_period, params_clean):
+    """Run backtest engine on provided dataframe"""
+    engine_params = {
+        'initial_capital': INITIAL_CAPITAL,
+        'fixed_amount': POSITION_SIZE_FIXED,
+        'rsi_period': rsi_period,
+        **params_clean
+    }
+    engine = FixedAmountBacktestEngine(**engine_params)
+    engine.run(df)
+    return engine.get_results()
+
+def select_trades_near_target(trades):
+    """Return trades & sells closest to TARGET_DATE (max MAX_TRADES)"""
+    if not trades:
+        return None
+    
+    trades_sorted = sorted(trades, key=lambda x: pd.to_datetime(x['timestamp']))
+    sell_trades = [t for t in trades_sorted if t['type'] == 'SELL']
+    if not sell_trades:
+        return None
+    
+    for trade in sell_trades:
+        trade_time = pd.to_datetime(trade['timestamp'])
+        trade['days_from_target'] = abs((trade_time - TARGET_DATE).total_seconds() / 86400)
+        trade['is_before'] = trade_time <= TARGET_DATE
+    
+    sell_trades_sorted = sorted(
+        sell_trades,
+        key=lambda x: (not x['is_before'], x['days_from_target'])
+    )
+    selected_sells = sell_trades_sorted[:MAX_TRADES]
+    if not selected_sells:
+        return None
+    
+    selected_sell_times = [pd.to_datetime(t['timestamp']) for t in selected_sells]
+    min_time = min(selected_sell_times)
+    max_time = max(selected_sell_times)
+    
+    buffer_before = timedelta(hours=48)
+    buffer_after = timedelta(hours=24)
+    time_start = min_time - buffer_before
+    time_end = max_time + buffer_after
+    
+    selected_trades = [
+        t for t in trades_sorted
+        if time_start <= pd.to_datetime(t['timestamp']) <= time_end
+    ]
+    
+    return {
+        'selected_trades': selected_trades,
+        'selected_sells': selected_sells,
+        'time_start': time_start,
+        'time_end': time_end
+    }
+
+def summarize_results_with_selection(results, selection):
+    """Update stats so report only reflects selected trades"""
+    selected_trades = selection['selected_trades']
+    selected_sells = [t for t in selected_trades if t['type'] == 'SELL']
+    if not selected_sells:
+        return None
+    
+    total_profit = sum(s.get('profit', 0) for s in selected_sells)
+    total_profit_pct = (total_profit / results['initial_capital']) * 100 if results['initial_capital'] else 0
+    winning = len([s for s in selected_sells if s.get('profit', 0) > 0])
+    losing = len([s for s in selected_sells if s.get('profit', 0) < 0])
+    win_rate = (winning / len(selected_sells) * 100) if selected_sells else 0
+    avg_profit = total_profit / len(selected_sells) if selected_sells else 0
+    avg_profit_pct = (
+        sum(s.get('profit_pct', 0) for s in selected_sells) / len(selected_sells)
+        if selected_sells else 0
+    )
+    
+    sell_reasons = {}
+    for sell in selected_sells:
+        reason = sell.get('reason', 'UNKNOWN')
+        sell_reasons[reason] = sell_reasons.get(reason, 0) + 1
+    
+    results['trades'] = selected_trades
+    results['total_trades'] = len(selected_sells)
+    results['selected_trades_count'] = len(selected_trades)
+    results['winning_trades'] = winning
+    results['losing_trades'] = losing
+    results['win_rate'] = win_rate
+    results['total_profit'] = total_profit
+    results['total_profit_pct'] = total_profit_pct
+    results['avg_profit'] = avg_profit
+    results['avg_profit_pct'] = avg_profit_pct
+    results['final_capital'] = results['initial_capital'] + total_profit
+    results['sell_reasons'] = sell_reasons
+    results['start_date'] = selection['time_start']
+    results['end_date'] = selection['time_end']
+    results['days'] = (selection['time_end'] - selection['time_start']).days + 1
+    results['target_date'] = TARGET_DATE.strftime('%Y-%m-%d')
+    
+    return results
+
 def load_optimal_params():
     """Load optimal parameters"""
     filename = 'optimal_params_real_data.csv'
@@ -95,70 +193,38 @@ def backtest_timeframe(pair, params, timeframe='6H'):
         
         params_clean = {k: v for k, v in adjusted_params.items() if k != 'position_size'}
         
-        engine_params = {
-            'initial_capital': INITIAL_CAPITAL,
-            'fixed_amount': POSITION_SIZE_FIXED,
-            'rsi_period': rsi_period,
-            **params_clean
-        }
+        # First run on toàn bộ dữ liệu
+        initial_results = run_backtest_on_df(df, rsi_period, params_clean)
+        if not initial_results:
+            return None
         
-        engine = FixedAmountBacktestEngine(**engine_params)
-        engine.run(df)
-        results = engine.get_results()
+        selection = select_trades_near_target(initial_results.get('trades', []))
+        if not selection or not selection['selected_trades']:
+            return None
         
-        if results:
-            results['start_date'] = df['timestamp'].min()
-            results['end_date'] = df['timestamp'].max()
-            results['days'] = len(df)
-            results['pair'] = pair
-            results['timeframe'] = timeframe
-            
-            # Filter to get 100 nearest trades (closest to TARGET_DATE)
-            trades = results.get('trades', [])
-            if trades:
-                # Sort by time
-                trades_sorted = sorted(trades, key=lambda x: pd.to_datetime(x['timestamp']))
-                
-                # Get SELL trades closest to TARGET_DATE
-                sell_trades = [t for t in trades_sorted if t['type'] == 'SELL']
-                
-                if sell_trades:
-                    # Calculate distance from TARGET_DATE
-                    for trade in sell_trades:
-                        trade_time = pd.to_datetime(trade['timestamp'])
-                        trade['days_from_target'] = abs((trade_time - TARGET_DATE).total_seconds() / 86400)
-                        trade['is_before'] = trade_time <= TARGET_DATE
-                    
-                    # Sort: prioritize trades before TARGET_DATE, then by distance
-                    sell_trades_sorted = sorted(sell_trades, 
-                                               key=lambda x: (not x['is_before'], x['days_from_target']))
-                    
-                    # Get 100 nearest trades
-                    selected_sells = sell_trades_sorted[:MAX_TRADES]
-                    
-                    # Get all related buy trades for these sell trades
-                    selected_sell_times = [pd.to_datetime(t['timestamp']) for t in selected_sells]
-                    if selected_sell_times:
-                        min_time = min(selected_sell_times)
-                        max_time = max(selected_sell_times)
-                        
-                        # Get all trades in this time range
-                        selected_trades = []
-                        for trade in trades_sorted:
-                            trade_time = pd.to_datetime(trade['timestamp'])
-                            if trade_time <= max_time + timedelta(days=1):
-                                selected_trades.append(trade)
-                        
-                        # Re-sort selected_trades by time
-                        selected_trades = sorted(selected_trades, key=lambda x: pd.to_datetime(x['timestamp']))
-                        
-                        # Update results with filtered trades
-                        results['trades'] = selected_trades
-                        results['total_trades'] = len(selected_sells)
-                        results['selected_trades_count'] = len(selected_trades)
-                        results['target_date'] = TARGET_DATE.strftime('%Y-%m-%d')
+        window_start = max(selection['time_start'], df['timestamp'].min())
+        window_end = min(selection['time_end'], df['timestamp'].max())
+        df_window = df[(df['timestamp'] >= window_start) & (df['timestamp'] <= window_end)]
         
-        return results
+        if len(df_window) < rsi_period + 5:
+            return None
+        
+        window_results = run_backtest_on_df(df_window, rsi_period, params_clean)
+        if not window_results:
+            return None
+        
+        window_selection = select_trades_near_target(window_results.get('trades', []))
+        if not window_selection:
+            return None
+        
+        summarized = summarize_results_with_selection(window_results, window_selection)
+        if not summarized:
+            return None
+        
+        summarized['pair'] = pair
+        summarized['timeframe'] = timeframe
+        
+        return summarized
         
     except Exception as e:
         print(f"Error backtesting {pair} {timeframe}: {e}")
